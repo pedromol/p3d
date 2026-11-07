@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 from pathlib import Path, PurePath, PureWindowsPath
@@ -144,7 +145,7 @@ async def preprocess(
         mask_edits,
     )
     params["input"] = image_info
-    preview_result = model_service.prepare_preview(image_bytes, params)
+    preview_result = await asyncio.to_thread(model_service.prepare_preview, image_bytes, params)
     return {"params": params, **preview_result}
 
 
