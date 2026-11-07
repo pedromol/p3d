@@ -161,14 +161,14 @@ class MarchingCubeHelper:
         try:
             verts, faces, _, _ = measure.marching_cubes(volume, level=0.0)
         except Exception:
-            empty_v = torch.zeros((0, 3), dtype=torch.float32)
-            empty_f = torch.zeros((0, 3), dtype=torch.long)
+            empty_v = torch.zeros((0, 3), dtype=torch.float32, device=level.device)
+            empty_f = torch.zeros((0, 3), dtype=torch.long, device=level.device)
             return empty_v, empty_f
 
         # Normalize verts from [0, resolution-1] to [-1, 1]
         verts = verts / (self.resolution - 1) * 2.0 - 1.0
-        verts_t = torch.from_numpy(verts.astype(np.float32))
-        faces_t = torch.from_numpy(faces.astype(np.int64))
+        verts_t = torch.from_numpy(verts.astype(np.float32)).to(device=level.device)
+        faces_t = torch.from_numpy(faces.astype(np.int64)).to(device=level.device)
         return verts_t, faces_t
 '''
 
