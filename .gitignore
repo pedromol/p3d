@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .deps_installed
 .test-data/
+.venv/
+.pytest_cache/
+.serena/

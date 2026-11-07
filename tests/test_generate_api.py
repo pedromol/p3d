@@ -55,6 +55,9 @@ class FakeModelService:
     def unload(self):
         pass
 
+    def stop(self):
+        pass
+
 
 class FakeUpload:
     def __init__(self, filename, content, content_type):

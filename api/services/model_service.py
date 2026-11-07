@@ -69,6 +69,7 @@ DEFAULT_MAX_OUTPUT_FILES = 100
 DEFAULT_WORKER_COUNT = 1
 DEFAULT_MAX_QUEUE_SIZE = 4
 DEFAULT_JOB_TIMEOUT_SECONDS = 30 * 60
+DEFAULT_IDLE_TIMEOUT_SECONDS = 300
 DEFAULT_TRIPOSR_SOURCE_REF = "107cefdc244c39106fa830359024f6a2f1c78871"
 TRIPOSR_REQUIRED_FILES = (
     "tsr/system.py",
@@ -97,6 +98,16 @@ def _env_positive_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -369,6 +380,7 @@ class ModelService:
         worker_count: int | None = None,
         max_queue_size: int | None = None,
         job_timeout_seconds: int | None = None,
+        idle_timeout_seconds: int | None = None,
         start_workers: bool = True,
     ):
         self._model      = None
@@ -388,6 +400,17 @@ class ModelService:
             "IMAGE3D_JOB_TIMEOUT_SECONDS",
             DEFAULT_JOB_TIMEOUT_SECONDS,
         )
+        self.idle_timeout_seconds = (
+            idle_timeout_seconds
+            if idle_timeout_seconds is not None
+            else _env_int(
+                "IMAGE3D_IDLE_TIMEOUT_SECONDS",
+                DEFAULT_IDLE_TIMEOUT_SECONDS,
+            )
+        )
+        self._last_active_time = time.monotonic()
+        self._stop_event = threading.Event()
+        self._watchdog_thread: threading.Thread | None = None
         self._queue: queue.Queue[tuple[str, bytes, dict]] = queue.Queue(
             maxsize=self.max_queue_size
         )
@@ -454,8 +477,64 @@ class ModelService:
         self._model = model
         print(f"[ModelService] Model ready on {self.device_name}.")
 
+    @property
+    def is_model_loaded(self) -> bool:
+        return self._model is not None
+
+    def _is_idle(self) -> bool:
+        if not self._queue.empty():
+            return False
+        with self._jobs_lock:
+            for job in self._jobs.values():
+                if job.status == "running":
+                    return False
+        return True
+
+    def _idle_watchdog_loop(self):
+        while not self._stop_event.is_set():
+            check_interval = (
+                min(2.0, max(0.05, float(self.idle_timeout_seconds) / 2.0))
+                if self.idle_timeout_seconds > 0
+                else 5.0
+            )
+            if self._stop_event.wait(timeout=check_interval):
+                break
+            if self.idle_timeout_seconds <= 0:
+                continue
+            if self._model is None:
+                continue
+            if not self._is_idle():
+                self._last_active_time = time.monotonic()
+                continue
+            idle_duration = time.monotonic() - self._last_active_time
+            if idle_duration >= self.idle_timeout_seconds:
+                print(
+                    f"[ModelService] Idle timeout reached ({idle_duration:.1f}s >= "
+                    f"{self.idle_timeout_seconds}s). Unloading model to free VRAM..."
+                )
+                self.unload()
+
     def unload(self):
-        self._model = None
+        with self._lock:
+            if self._model is None:
+                return
+            print("[ModelService] Unloading TripoSR model...")
+            self._model = None
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    if hasattr(torch.cuda, "ipc_collect"):
+                        torch.cuda.ipc_collect()
+            except Exception as exc:
+                print(f"[ModelService] Warning: error clearing CUDA cache: {exc}")
+            print("[ModelService] Model unloaded and GPU cache cleared.")
+
+    def stop(self):
+        self._stop_event.set()
+        self.unload()
 
     def get_job(self, job_id: str) -> Optional[Job]:
         with self._jobs_lock:
@@ -654,10 +733,22 @@ class ModelService:
             worker.start()
             self._workers.append(worker)
 
+        if self.idle_timeout_seconds > 0:
+            self._watchdog_thread = threading.Thread(
+                target=self._idle_watchdog_loop,
+                name="image3d-idle-watchdog",
+                daemon=True,
+            )
+            self._watchdog_thread.start()
+
     def _worker_loop(self):
-        while True:
-            job_id, image_bytes, params = self._queue.get()
+        while not self._stop_event.is_set():
             try:
+                job_id, image_bytes, params = self._queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            try:
+                self._last_active_time = time.monotonic()
                 with self._jobs_lock:
                     job = self._jobs.get(job_id)
                     if job is None:
@@ -674,10 +765,13 @@ class ModelService:
                     self._refresh_queue_positions_locked()
                 self._run(job, image_bytes, params)
             finally:
+                self._last_active_time = time.monotonic()
                 with self._jobs_lock:
                     self._expire_submission_keys_locked()
                     self._refresh_queue_positions_locked()
                 self._queue.task_done()
+                if self.idle_timeout_seconds == 0 and self._is_idle():
+                    self.unload()
 
     def _run(self, job: Job, image_bytes: bytes, params: dict):
         job.status = "running"

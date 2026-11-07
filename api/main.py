@@ -21,7 +21,7 @@ async def lifespan(app: FastAPI):
         )
     yield
     print("[Server] Shutting down...")
-    model_service.unload()
+    model_service.stop()
 
 
 app = FastAPI(title="Image to 3D", lifespan=lifespan)
@@ -40,7 +40,11 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "device": model_service.device_name}
+    return {
+        "status": "ok",
+        "device": model_service.device_name,
+        "model_loaded": getattr(model_service, "is_model_loaded", False),
+    }
 
 
 def serve():

@@ -222,7 +222,17 @@ async def preview(filename: str):
 
 @router.get("/device")
 async def device_info():
-    return {"device": model_service.device_name}
+    return {
+        "device": model_service.device_name,
+        "model_loaded": getattr(model_service, "is_model_loaded", False),
+        "idle_timeout_seconds": getattr(model_service, "idle_timeout_seconds", None),
+    }
+
+
+@router.post("/unload")
+async def unload_model():
+    model_service.unload()
+    return {"status": "ok", "message": "Model unloaded"}
 
 
 @router.get("/preflight")
