@@ -1,0 +1,28 @@
+services:
+  picture-to-3d:
+    build:
+      context: .
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
+    image: pedromol/p3d:latest
+    container_name: p3d
+    ports:
+      - "8080:8080"
+    environment:
+      - IMAGE3D_HOST=0.0.0.0
+      - IMAGE3D_PORT=8080
+      - IMAGE3D_DATA_DIR=/data
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - picture-to-3d-data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  picture-to-3d-data:
